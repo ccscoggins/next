@@ -12,75 +12,58 @@ WINDOW * lineWin;
 
 uint8_t * filebuffer;
 long int filelen;
-char * filename;
+uint8_t * appendbuffer;
+long int appendlen;
+char filename[256];
 int yoffset;
 long int selectedByte;
 int selectedNybl;
 int writeMode = false;
+const char * TEMPLATE = "untitled_XXXXXX.dat";
 
-int loadFile(const char * filename){
+int loadFile(char * filename, int use_filename){
     long int result;
     int ret;
-    FILE * fp = fopen(filename, "rb");
+    FILE * fp;
     
-    if (!fp){
-        fprintf(stderr, "Unable to open file %s\n", filename);
-        return -1;
-    }
+    if(use_filename == true){
     
-    fseek(fp, 0L, SEEK_END);
-    filelen = ftell(fp);
-    rewind(fp);
-    
-    filebuffer = malloc(filelen * sizeof(uint8_t)); //technically sizeof(uint8_t) is unnecessary but it's more legible
-    result = fread(filebuffer, sizeof(*filebuffer), filelen, fp);
-    if (result != filelen){
-        fprintf(stderr, "File %s could not be loaded fully\n", filename);
-        ret = -1;
-    }
-    else
-        ret = 0;
-    
-    fclose(fp);
-    return ret;
-}
-
-//Fixme - change messages to use ncurses instead of stderr
-int saveFile(const char * filename){
-    FILE * fp = fopen(filename, "rb");
-    long int result;
-    if (!(!fp)){
-        fprintf(stderr, "File %s already exists.  Moving existing file to %s.bak\n", filename, filename);
-        fclose(fp);
-        char * newname = malloc(sizeof(*filename) * (strlen(filename) + 5));
-        strcpy(newname, filename);
-        strcat(newname, ".bak");
-        result = rename(filename, newname);
-        if (result != 0){
-            fprintf(stderr, "ERROR: Unable to backup existing file.  Program will exit\n");
-            exit(-1);
+        fp = fopen(filename, "ab");
+        if (!fp){
+            fprintf(stderr, "Unable to open file %s\n", filename);
+            return -1;
         }
-    }
-    
-    fp = fopen(filename, "wb");
-    result = fwrite(filebuffer, sizeof(*filebuffer), filelen, fp);
-    if(result != filelen){
-        fprintf(stderr, "WRITE ERROR: Bytes written not equal to bytes in memory\n");
+        
+        fseek(fp, 0L, SEEK_END);
+        filelen = ftell(fp);
+        rewind(fp);
+        
+        filebuffer = malloc(filelen * sizeof(uint8_t)); //technically sizeof(uint8_t) is unnecessary but it's more legible
+        result = fread(filebuffer, sizeof(*filebuffer), filelen, fp);
+        if (result != filelen){
+            fprintf(stderr, "File %s could not be loaded fully\n", filename);
+            ret = -1;
+        }
+        else
+            ret = 0;
+        
+        fclose(fp);
     }
     else{
-        fprintf(stderr, "Write successful\n");
+        filebuffer = malloc(0);
+        filelen = 0;
     }
-    
-    fclose(fp);
+    return ret;
 }
 
 int saveSequence(){
     char * newfilename;
     FILE * fp;
     int validname = false, getout = false, result;
+    int trueappendlen = appendlen;
     
     do{
-        newfilename = ask(" Name ", " Please enter a filename:", validname ? "true" : "false");
+        newfilename = ask(" Name ", " Please enter a filename:", filename);
         
         if (strlen(newfilename) < 1){
             getout = !dialog(" Error ", " Filename cannot be empty.", "", "Ok", "Cancel");
@@ -102,9 +85,17 @@ int saveSequence(){
     if (!fp){
         dialog(" Error ", "  The file could not be opened.", "", "Ok", "Ok");
     }
+    
     result = fwrite(filebuffer, sizeof(*filebuffer), filelen, fp);
     // add append buffer here
-    if (result != filelen){
+    while (trueappendlen > 0){
+        if (appendbuffer[trueappendlen - 1] != 0x00)
+            break;
+        trueappendlen--;
+    }
+    result += fwrite(appendbuffer, sizeof(*appendbuffer), trueappendlen, fp);
+    
+    if (result != filelen + trueappendlen){
         dialog(" Error ", "The file may have saved incorrectly.", "", "Ok", "Ok");
     }
     else{
@@ -114,6 +105,18 @@ int saveSequence(){
     
 }
 
+void initAppendBuf(){
+    appendbuffer = calloc(64, sizeof(uint8_t));
+    appendlen = 64;
+}
+
+void resizeAppendBuf(){
+    appendlen += 64;
+    appendbuffer = realloc(appendbuffer, appendlen * sizeof(uint8_t));
+    for(int i=appendlen-64; i<appendlen; i++){
+        appendbuffer[i] = 0;
+    }
+}
 
 void freeAll(){
     free(filebuffer);
@@ -128,10 +131,20 @@ int getHexvalForChar(char input){
 }
 
 void insertNybl(char input, long int selectedByte, int selectedNybl){
-    uint8_t currentValue = filebuffer[selectedByte];
+    uint8_t * destbuffer;
+    long int activeByte;
+    if (selectedByte < filelen){
+        destbuffer = filebuffer;
+        activeByte = selectedByte;
+    }
+    else{
+        destbuffer = appendbuffer;
+        activeByte = (selectedByte - filelen);
+    }
+    uint8_t currentValue = destbuffer[activeByte];
     uint8_t andval = 0x0f << ((1 - selectedNybl) * 4);
     uint8_t orval = getHexvalForChar(input) << (selectedNybl * 4);
-    filebuffer[selectedByte] = (currentValue & andval) | orval;
+    destbuffer[activeByte] = (currentValue & andval) | orval;
 }
 
 void startViewer(){
@@ -163,11 +176,16 @@ void startViewer(){
             currbyte = yoffset * 16 + i;
             if (currbyte < 0)
                 continue;
-            if (currbyte >= filelen)
+            if (currbyte >= filelen + appendlen)
                 break;
             if (currbyte % 16 == 0)
                 mvwprintw(lineWin, i/16 + 1, 0, "%08X", currbyte);
-            contents = filebuffer[currbyte];
+            if (currbyte < filelen){
+                contents = filebuffer[currbyte];
+            }
+            else{
+                contents = appendbuffer[currbyte - filelen];
+            }
             mvwprintw(byteWin, i/16 + 1, (i%16 * 3) + 1, "%02X", contents);
             if (currbyte == selectedByte){
                 wattron(textWin, A_STANDOUT);
@@ -209,8 +227,8 @@ void startViewer(){
                 break;
             case KEY_DOWN:
                 selectedByte += 16;
-                if (selectedByte >= filelen)
-                    selectedByte = filelen - 1;
+                if (selectedByte >= filelen + appendlen)
+                    selectedByte = filelen + appendlen - 1;
                 if (selectedByte > (yoffset + 15) * 16)
                     yoffset += 1;
                 break;
@@ -239,8 +257,8 @@ void startViewer(){
                 if (selectedNybl < 0){
                     selectedNybl = 1;
                     selectedByte += 1;
-                    if (selectedByte >= filelen)
-                        selectedByte = filelen - 1;
+                    if (selectedByte >= filelen + appendlen)
+                        resizeAppendBuf();
                     if (selectedByte > (yoffset + 15) * 16)
                         yoffset += 1;
                 }
@@ -258,8 +276,8 @@ void startViewer(){
                 
             case KEY_NPAGE:
                 selectedByte += 256;
-                if (selectedByte >= filelen)
-                    selectedByte = filelen - 1;
+                if (selectedByte >= filelen + appendlen)
+                    resizeAppendBuf();
                 for (int i=0; i<16; i++){
                     if (selectedByte < (yoffset+1) * 16){
                         break;
@@ -291,23 +309,24 @@ void startViewer(){
 
 void displayHelp(){
     fprintf(stdout, "NEXT - Hex Viewer/Editor\n");
-    fprintf(stdout, "\n");
-    fprintf(stdout, "A filename must be provided to run NEXT\n");
     
 }
 
 int main(int argc, char * argv[]){
-    if (argc < 2){
-        displayHelp();
-        exit(-1);
+    int use_filename;
+    if (argc < 2){ 
+        use_filename = false;
+    }
+    else {
+        strncpy(filename, argv[1], 255);
+        use_filename = true;
     }
     
-    filename = argv[1];
-    
-    int start = loadFile(filename);
+    int start = loadFile(filename, use_filename);
     if (start != 0){
         exit(-1);
     }
+    initAppendBuf();
     
     startViewer();
     

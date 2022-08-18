@@ -2,7 +2,7 @@
 
 Didn't feel like bothering the sysadmin to install a hex editor so I made my own.
 
-Currently reads and writes but does not append and can't create new files, so it's a little limited at the moment.
+Reads, writes, and appends to files.
 
 ## COMPILING
 Depends on lncursesw.  Once you have that, just run make and you're good.
